@@ -1,12 +1,25 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include "image_rot.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+
+#define FILEPATH "/tmp/mmapped.bin"
+
+pixel_t* map;
+int fd;
+size_t size_of_file;
+
 
 read_status_t from_bmp(FILE* in, image_t* const read) {
-	uint32_t i, j;
+	uint32_t i;
 	int skip;
 	bmp_header_t header;
+
 	if (in == NULL) return READ_FILE_NOT_FOUND;
 	if (fread(&header, sizeof(bmp_header_t), 1, in) != 1) {
 		if (feof(in)) {
@@ -16,9 +29,38 @@ read_status_t from_bmp(FILE* in, image_t* const read) {
 	}
 	if (header.bfType != 0x4d42) return READ_INVALID_SIGNATURE;
 
-	read->height = header.biHeight;
+    fd = open(FILEPATH, O_RDWR | O_CREAT | O_TRUNC, (mode_t)0600);
+    if (fd == -1) {
+        perror("Error opening file for writing");
+        exit(EXIT_FAILURE);
+    }
+    size_of_file = sizeof(pixel_t)*(header.biHeight)*(header.biWidth);
+    printf("%d\n",size_of_file);
+    int result = lseek(fd, size_of_file , SEEK_SET);
+    if (result == -1) {
+        close(fd);
+        perror("Error calling lseek() to 'stretch' the file");
+        exit(EXIT_FAILURE);
+    }
+
+    result = write(fd, "", 1);
+    if (result != 1) {
+        close(fd);
+        perror("Error writing last byte of the file");
+        exit(EXIT_FAILURE);
+    }
+
+    map = mmap(0, size_of_file, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        close(fd);
+        perror("Error mmapping the file");
+        exit(EXIT_FAILURE);
+    }
+
+    read->height = header.biHeight;
 	read->width = header.biWidth;
-	read->data = (pixel_t*)malloc(header.biHeight*header.biWidth*sizeof(pixel_t));
+	//read->data = (pixel_t*)malloc(header.biHeight*header.biWidth*sizeof(pixel_t));
+	read->data = map;
 	skip = read->width % 4;
 
 	fseek(in, header.bOffBits, SEEK_SET);
@@ -76,5 +118,10 @@ write_status_t to_bmp(FILE* out, image_t const* img) {
 		fwrite(align, img->width % 4, 1, out);
 		fflush(out);
 	}
+
+    if (munmap(map, header->biSizeImage)) {
+        perror("Error un-mmapping the file");
+    }
+
 	free(header);
 }
